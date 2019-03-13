@@ -1,0 +1,288 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'fileutils'
+require 'logger'
+
+# This doesn't do much sadly, as the script won't even parse if version < 2.3.
+abort "Ruby 2.3.0 or higher required; found #{RUBY_VERSION}" if RUBY_VERSION.to_f < 2.3
+
+##
+# Stage a set of todo files to a directory for processing.
+#
+
+###############################################################################
+# Constants
+###############################################################################
+DEFAULT_BATCH_SIZE   = 5
+DEFAULT_PREFIX       = ''
+DEFAULT_LOGGER_LEVEL = 'INFO'
+COMMAND              = File.basename __FILE__
+
+LOGGER               = Logger.new(STDOUT)
+LOGGER.level         = ENV['STAGE_TODOS_LOG_LEVEL'] || DEFAULT_LOGGER_LEVEL
+
+###############################################################################
+# Helper methods
+###############################################################################
+##
+# Return a hash that groups the source args under categories +:Directory+,
+# +:File+, <tt>:'Not found'</tt>.
+#
+#   args = ["test/source3",
+#     "test/source2/file-A.todo",
+#     "test/source2/file.todo",
+#     "test/source"]
+#   analyze_sources args
+#     # => {:"Not found"=>["test/source3"], :File=>["test/source2/file-A.todo", "test/source2/file.todo"], :Directory=>["test/source"]}
+#
+# @param [Array<String>] args the source arguments from the command line
+# @return [Hash<Symbol,Array>]
+def analyze_sources args
+  data = args.inject({}) { |memo, arg|
+    kind = :'Not found'
+    kind = :Directory if File.directory? arg
+    kind = :File      if File.file? arg
+    (memo[kind] ||= []) << arg
+    memo
+  }
+end
+
+##
+# Return an array of todo file paths of size +batch_size+ based on +sources+
+# hash (output of {#analyze_sources}). Use +batch_size: :all+ to return all
+# found paths.
+#
+# @param [Hash<Symbol, Array>] sources hash of categorized paths
+# @param [Integer,Symbol] batch_size number of paths to return or +:all+
+# @return [Array<String>]
+def find_files sources, batch_size: DEFAULT_BATCH_SIZE
+  full_list = sources.flat_map { |key, values|
+    if key == :Directory
+      values.each.flat_map { |v| Dir[File.join v, "*.todo"] }
+    else
+      values
+    end
+  }
+
+  return full_list if batch_size == :all
+  full_list.take batch_size
+end
+
+##
+# Return +true+ unless one or more sources are categorized as
+# <tt>:'Not found'</tt>.
+#
+# @param [Hash<Symbol, Array>] sources hash of categorized paths
+# @return [Boolean]
+def sources_valid? sources
+  return true if (sources[:'Not found'] || []).empty?
+
+  LOGGER.error(COMMAND) {"All sources must be files or directories; not found: #{sources[:'Not found']}"}
+  false
+end
+
+##
+# Return +true+ if all the files have the '.todo' extension.
+#
+# @param [Array<Sring>] files
+# @return [Boolean]
+def all_todo_files? files
+  return true if files.all? { |f| f =~ /\.todo$/i }
+
+  bad_files = files.reject { |f|  f =~ /\.todo$/i }
+  LOGGER.error(COMMAND) { "Refusing to process files without '.todo' extension: #{bad_files}" }
+  false
+end
+
+##
+# Return +true+ if all paths are unique.
+#
+# @param [Array<Sring>] files
+# @return [Boolean]
+def files_unique? files, case_sensitive: false
+  bases = files.map { |f| File.basename f }
+  bases.map! &:downcase unless case_sensitive
+
+  return true if bases.size == bases.uniq.size
+
+  dupes = bases.select { |base|     # find repeated basenames
+    bases.count(base) > 1
+  }.uniq.map { |base|       # get the full paths for the repeats
+    regex = case_sensitive ? /\/#{base}$/ : /\/#{base}$/i
+    files.grep regex
+  }
+  LOGGER.error(COMMAND) {
+    "Refusing to process files with identical base names (case_sensitive=#{case_sensitive}): #{dupes}"
+  }
+  false
+end
+
+###############################################################################
+# Option parser and parser helper methods
+###############################################################################
+##
+# Return the batch size: +:all+ if +opt+ is 'ALL' (case insensitive); an
+# {Integer} if +opt+ is an integer; otherwise, +nil+.
+#
+# @param [String] opt the value of the +:batch_size+ option
+# @return [Integer,Symbol,NilClass]
+def  get_batch_size opt
+  return :all             if opt.to_s.strip.downcase == 'all'
+  Integer opt.to_s.strip  if opt.to_s.strip =~ /^\d+$/
+end
+
+##
+# Return the +prefix+: +''+ if opt is empty; +opt+ if value is string containing
+# only alphanumeric characters, +-+, +_+; otherwise, +nil+.
+#
+# @param [String] opt the value of the +:prefix+ option
+# @return [String,NilClass]
+def get_prefix opt
+  return '' if opt.to_s.strip == ''
+  opt       if opt.to_s =~ /^[-_[:alnum:]]+$/
+end
+
+# Default options
+options = {
+  batch_size:     DEFAULT_BATCH_SIZE,
+  clobber:        false,
+  case_sensitive: false,
+  prefix:         DEFAULT_PREFIX
+}
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: #{File.basename __FILE__} [OPTIONS] {SOURCE_DIR|FILE...} DEST_DIR"
+
+  opts.accept :batch_size do |batch_size|
+    size = get_batch_size batch_size
+    raise ArgumentError, "ERROR: --batch-size must be in integer or 'ALL'; got '#{batch_size}'" unless size
+    size
+  end
+
+  opts.accept :prefix do |prefix|
+    val = get_prefix prefix
+    raise ArgumentError, "ERROR: --prefix may be '' or a string of letters, numbers, '-', or '_', without spaces; got '#{prefix}'" unless val
+    val
+  end
+
+  batch_size_desc = %Q{Number of todo files to copy [default=#{DEFAULT_BATCH_SIZE}]; use ALL to copy all files.}
+  opts.on '-b', '--batch-size COUNT', :batch_size, batch_size_desc do |batch_size|
+    options[:batch_size] = batch_size
+  end
+
+  opts.on '-p', '--prefix WORD', :prefix, "Text to prefix to copied todo files [default=#{DEFAULT_PREFIX.inspect}]" do |prefix|
+    options[:prefix] = prefix
+  end
+
+  opts.on '-x', '--[no]-clobber', 'Overwrite existing todo files [default=false]' do
+    options[:clobber] = true
+  end
+
+  # It's a pain in ruby to determine whether a filesystem is case-insensitive.
+  # Note that you can't check filesystem case-sensitivity using OS type; the FS
+  # may be mounted as case-insensitive or (potentially?) the mounted FS itself
+  # may be of an unknown type regardless of mount type.
+  case_sensitive_desc = 'Destination filesystem is case sensitive [default=false]'
+  opts.on '-c', '--case-sensitive',  case_sensitive_desc do
+    options[:case_sensitive] = true
+  end
+
+  opts.on('-h', '--help', 'Prints this help') do
+    puts opts
+    puts <<~EOF
+
+Stage a set of todo files to a directory for processing. 
+
+    EOF
+
+    exit
+  end
+
+  opts.on '-H', '--detailed-help', 'Print detailed help with examples' do
+    puts opts
+    puts <<~EOF
+
+Stage a set of todo files to a directory for processing. 
+
+\e[1mLOGGING\e[22m
+
+Default log level is #{DEFAULT_LOGGER_LEVEL}. To change it, set `STAGE_TODOS_LOG_LEVEL` environment
+variable; valid values are `FATAL`, `ERROR`, `WARN`, `INFO`, or `DEBUG`.
+      
+\e[1mEXAMPLES\e[22m
+
+Stage the first 10 todo files from '/mnt/share1/source' to '/mnt/share2/todo', 
+prefixing each copied file name with 'colenda_':
+
+  $ stage-todos --batch-size 10 --prefix colenda_ /mnt/share1/source /mnt/share2/todo
+
+Stage the all todo files from '/mnt/share1/source' to '/mnt/share2/todo':
+
+  $ stage-todos --batch-size ALL /mnt/share1/source /mnt/share2/todo
+
+Stage the first #{DEFAULT_BATCH_SIZE} (the default) todo files matching 'W3*.todo' to
+'/mnt/share2/todo': 
+  
+  $ stage-todos -p openn_ /mnt/share1/source/W3*.todo /mnt/share2/todo
+
+Stage 'W341.todo' and 'W342.todo' to '/mnt/share2/todo':
+  
+  $ stage-todos -p openn_ /mnt/share1/source/W341.todo /mnt/share1/source/W342.todo /mnt/share2/todo
+
+    EOF
+
+    exit
+  end
+end
+
+###############################################################################
+# Parse and validate options and arguments
+###############################################################################
+begin
+  parser.parse!
+rescue ArgumentError => ex
+  LOGGER.error(COMMAND) { ex.message }
+  abort
+end
+
+if ARGV.size < 2
+  LOGGER.error(COMMAND) { "Expected two or more arguments" }
+  abort
+end
+
+dest = ARGV.pop
+unless File.directory? dest
+  LOGGER.error(COMMAND) { "Last argument must be a directory: '#{dest}'" }
+  abort
+end
+
+sources = analyze_sources ARGV
+abort unless sources_valid? sources
+
+files = find_files sources, batch_size: options[:batch_size]
+abort unless all_todo_files? files
+abort unless files_unique? files, case_sensitive: options[:case_sensitive]
+
+#------------------------------------------------------------------------------
+# Print debugging info
+#------------------------------------------------------------------------------
+LOGGER.debug(COMMAND) { "Using BATCH_SIZE: #{options[:batch_size]}" }
+LOGGER.debug(COMMAND) { "Using PREFIX: '#{options[:prefix]}'" }
+LOGGER.debug(COMMAND) { "Copying files: #{files.join '; '} to: #{dest}" }
+
+###############################################################################
+# Stage todo files
+###############################################################################
+files.each do |file|
+  base = File.basename file
+  dest_file = File.join dest, base
+  if File.exist? dest_file
+    if options[:clobber]
+      LOGGER.warn(COMMAND) { "Overwriting existing file: '#{dest_file}' (source: #{file})" }
+    else
+      LOGGER.warn(COMMAND) { "Refusing to overwrite existing file: '#{dest_file}' (source: #{file})" }
+      next
+    end
+  end
+  FileUtils.cp file, dest, verbose: true
+end
