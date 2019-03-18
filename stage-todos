@@ -145,10 +145,11 @@ end
 
 # Default options
 options = {
-  batch_size:     DEFAULT_BATCH_SIZE,
-  clobber:        false,
-  case_sensitive: false,
-  prefix:         DEFAULT_PREFIX
+  batch_size:      DEFAULT_BATCH_SIZE,
+  clobber:         false,
+  case_sensitive:  false,
+  move_todo_files: true,
+  prefix:          DEFAULT_PREFIX
 }
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: #{File.basename __FILE__} [OPTIONS] {SOURCE_DIR|FILE...} DEST_DIR"
@@ -178,12 +179,17 @@ parser = OptionParser.new do |opts|
     options[:clobber] = true
   end
 
+  opts.on '-c', '--copy', 'Copy todo files rather than move them; files are moved by default' do
+    options[:move_todo_files] = false
+  end
+
   # It's a pain in ruby to determine whether a filesystem is case-insensitive.
   # Note that you can't check filesystem case-sensitivity using OS type; the FS
   # may be mounted as case-insensitive or (potentially?) the mounted FS itself
-  # may be of an unknown type regardless of mount type.
+  # may be of an unknown type, and thus unknown case-sensitivity, regardless of
+  # mount type.
   case_sensitive_desc = 'Destination filesystem is case sensitive [default=false]'
-  opts.on '-c', '--case-sensitive',  case_sensitive_desc do
+  opts.on '-s', '--case-sensitive',  case_sensitive_desc do
     options[:case_sensitive] = true
   end
 
@@ -191,7 +197,7 @@ parser = OptionParser.new do |opts|
     puts opts
     puts <<~EOF
 
-Stage a set of todo files to a directory for processing. 
+      Stage a set of todo files to a directory for processing.
 
     EOF
 
@@ -202,16 +208,16 @@ Stage a set of todo files to a directory for processing.
     puts opts
     puts <<~EOF
 
-Stage a set of todo files to a directory for processing. 
+Stage a set of todo files to a directory for processing.
 
 \e[1mLOGGING\e[22m
 
 Default log level is #{DEFAULT_LOGGER_LEVEL}. To change it, set `STAGE_TODOS_LOG_LEVEL` environment
 variable; valid values are `FATAL`, `ERROR`, `WARN`, `INFO`, or `DEBUG`.
-      
+
 \e[1mEXAMPLES\e[22m
 
-Stage the first 10 todo files from '/mnt/share1/source' to '/mnt/share2/todo', 
+Stage the first 10 todo files from '/mnt/share1/source' to '/mnt/share2/todo',
 prefixing each copied file name with 'colenda_':
 
   $ stage-todos --batch-size 10 --prefix colenda_ /mnt/share1/source /mnt/share2/todo
@@ -221,12 +227,12 @@ Stage the all todo files from '/mnt/share1/source' to '/mnt/share2/todo':
   $ stage-todos --batch-size ALL /mnt/share1/source /mnt/share2/todo
 
 Stage the first #{DEFAULT_BATCH_SIZE} (the default) todo files matching 'W3*.todo' to
-'/mnt/share2/todo': 
-  
+'/mnt/share2/todo':
+
   $ stage-todos -p openn_ /mnt/share1/source/W3*.todo /mnt/share2/todo
 
 Stage 'W341.todo' and 'W342.todo' to '/mnt/share2/todo':
-  
+
   $ stage-todos -p openn_ /mnt/share1/source/W341.todo /mnt/share1/source/W342.todo /mnt/share2/todo
 
     EOF
@@ -284,5 +290,11 @@ files.each do |file|
       next
     end
   end
-  FileUtils.cp file, dest, verbose: true
+  if options[:move_todo_files]
+    LOGGER.info(COMMAND) { "Moving todo file: #{file} -> #{dest}/#{base}" }
+    FileUtils.mv file, dest, verbose: true
+  else
+    LOGGER.info(COMMAND) { "Copying todo file: #{file} -> #{dest}/#{base}" }
+    FileUtils.cp file, dest, verbose: true
+  end
 end
