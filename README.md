@@ -49,3 +49,33 @@ Stage the first 5 (= default batch size) todo files matching 'W3*.todo' to
 Stage 'W341.todo' and 'W342.todo' to '/mnt/share2/todo':
 
     $ stage-todos -p openn_ /mnt/share1/source/W341.todo /mnt/share1/source/W342.todo /mnt/share2/todo
+
+### Running in production
+
+This script can be run in production with Docker.  To deploy it, issue the following commands from within this repository's root directory:
+
+```bash
+$ cp .env.example .env
+$ vi .env
+```
+
+Edit the file:
+
+```bash
+LOCAL_DESTINATION=x
+LOCAL_OPENN_SOURCE=x
+LOCAL_BULWARK_SOURCE=x
+```
+
+Where the environment variable match up to the following:
+
+* `LOCAL_DESTINATION` - the directory on the host filesystem where todo files are to be staged
+* `LOCAL_OPENN_SOURCE` - the directory on the host filesystem where the OPenn todo files are uploaded prior to running the script
+* `LOCAL_BULWARK_SOURCE` - the directory on the host filesystem where the Bulwark todo files are uploaded prior to running the script 
+
+Below are examples of running the script for Bulwark and OPenn respectively:
+
+```bash
+$ docker-compose run stage_todos ruby stage-todos --batch-size 10 /todos/bulwark/ /staged
+$ docker-compose run stage_todos ruby stage-todos --batch-size 10 /todos/openn/ /staged
+```

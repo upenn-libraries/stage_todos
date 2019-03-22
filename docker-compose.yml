@@ -1,0 +1,15 @@
+version: '2'
+
+services:
+  stage_todos:
+    image: 'stage_todos:latest'
+    env_file:
+      - '.env'
+    volumes:
+      - 'staging_todos:/usr/src/app'
+      - '${LOCAL_DESTINATION}:/staged'
+      - '${LOCAL_OPENN_SOURCE}:/todos/openn'
+      - '${LOCAL_BULWARK_SOURCE}:/todos/bulwark'
+
+volumes:
+  staging_todos:

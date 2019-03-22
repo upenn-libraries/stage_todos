@@ -9,6 +9,7 @@
 /test/tmp/
 /test/version_tmp/
 /tmp/
+.idea
 
 # Used by dotenv library to load environment variables.
 # .env
@@ -56,3 +57,6 @@ build-iPhoneSimulator/
 # ignore the test/dest folder but check it into git
 /test/dest/*
 !/test/dest/.keep
+
+# Docker stuff
+.env
